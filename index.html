@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Customer Balance Updater</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; max-width: 900px; }
+    input, button { padding: 10px; margin: 5px 0; width: 100%; }
+    button { cursor: pointer; font-weight: bold; }
+    pre { background: #f3f3f3; padding: 12px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+
+<h2>Customer Balance Updater</h2>
+
+<p>Enter Sales Invoice Key:</p>
+<input id="invoiceKey" placeholder="Paste Sales Invoice Key here">
+
+<button onclick="updateBalance()">Update Customer Balance Field</button>
+
+<pre id="log"></pre>
+
+<script>
+const CUSTOM_FIELD_NAME = "Customer Balance";
+
+function log(message) {
+  document.getElementById("log").textContent += message + "\n";
+}
+
+async function apiGet(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(url + " failed: " + response.status);
+  return await response.json();
+}
+
+async function apiPut(url, data) {
+  const response = await fetch(url, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data)
+  });
+  if (!response.ok) throw new Error(url + " failed: " + response.status);
+  return await response.text();
+}
+
+function findCustomerKey(invoice) {
+  return invoice.Customer || invoice.customer || invoice.CustomerKey || invoice.customerKey;
+}
+
+function findInvoiceTotal(invoice) {
+  return Number(
+    invoice.Total ||
+    invoice.total ||
+    invoice.Amount ||
+    invoice.amount ||
+    0
+  );
+}
+
+function formatNaira(amount) {
+  return "₦ " + Number(amount).toLocaleString("en-NG", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
+}
+
+async function updateBalance() {
+  document.getElementById("log").textContent = "";
+
+  try {
+    const invoiceKey = document.getElementById("invoiceKey").value.trim();
+
+    if (!invoiceKey) {
+      alert("Please enter Sales Invoice Key");
+      return;
+    }
+
+    log("Reading sales invoice...");
+
+    const invoices = await apiGet("/api4/sales-invoice-batch");
+    const invoice = invoices.find(x =>
+      x.Key === invoiceKey ||
+      x.key === invoiceKey ||
+      x.Id === invoiceKey ||
+      x.id === invoiceKey
+    );
+
+    if (!invoice) {
+      throw new Error("Invoice not found. Confirm the Sales Invoice Key.");
+    }
+
+    const customerKey = findCustomerKey(invoice);
+
+    if (!customerKey) {
+      throw new Error("Customer key not found on this invoice.");
+    }
+
+    log("Customer found: " + customerKey);
+    log("Reading customer balances...");
+
+    const customerTotals = await apiGet("/api4/sales-invoice-totals-by-customer-batch");
+
+    const customerRow = customerTotals.find(x =>
+      x.Customer === customerKey ||
+      x.customer === customerKey ||
+      x.CustomerKey === customerKey ||
+      x.customerKey === customerKey ||
+      x.Key === customerKey ||
+      x.key === customerKey
+    );
+
+    if (!customerRow) {
+      throw new Error("Customer balance row not found.");
+    }
+
+    const balance =
+      customerRow.Balance ||
+      customerRow.balance ||
+      customerRow.Total ||
+      customerRow.total ||
+      customerRow.Amount ||
+      customerRow.amount ||
+      0;
+
+    log("Balance found: " + balance);
+
+    invoice.CustomFields = invoice.CustomFields || invoice.customFields || invoice.custom_fields || {};
+
+    invoice.CustomFields[CUSTOM_FIELD_NAME] = formatNaira(balance);
+
+    log("Updating invoice custom field...");
+
+    await apiPut("/api4/sales-invoice-batch", [invoice]);
+
+    log("Done. Customer Balance field updated successfully.");
+    alert("Customer Balance updated successfully.");
+
+  } catch (error) {
+    log("ERROR: " + error.message);
+    alert(error.message);
+  }
+}
+</script>
+
+</body>
+</html>
