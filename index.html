@@ -2,30 +2,95 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>Customer Balance Updater</title>
+  <title>Sales Invoice With Customer Balance</title>
   <style>
-    body { font-family: Arial, sans-serif; padding: 20px; max-width: 900px; }
-    input, button { padding: 10px; margin: 5px 0; width: 100%; }
-    button { cursor: pointer; font-weight: bold; }
-    pre { background: #f3f3f3; padding: 12px; white-space: pre-wrap; }
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      color: #000;
+    }
+
+    input, button {
+      padding: 10px;
+      margin: 5px 0;
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    button {
+      cursor: pointer;
+      font-weight: bold;
+    }
+
+    #invoiceView {
+      margin-top: 25px;
+      max-width: 850px;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+    }
+
+    .header-table td {
+      vertical-align: top;
+      padding-bottom: 20px;
+    }
+
+    .invoice-title {
+      font-size: 22px;
+      font-weight: bold;
+      margin-bottom: 25px;
+    }
+
+    .items th,
+    .items td {
+      border: 1px solid #000;
+      padding: 8px;
+      font-size: 13px;
+    }
+
+    .items th {
+      text-align: left;
+    }
+
+    .right {
+      text-align: right;
+    }
+
+    .bold {
+      font-weight: bold;
+    }
+
+    .balance {
+      margin-top: 20px;
+      font-weight: bold;
+    }
+
+    #log {
+      background: #f3f3f3;
+      padding: 10px;
+      white-space: pre-wrap;
+      margin-top: 15px;
+    }
   </style>
 </head>
+
 <body>
 
-<h2>Customer Balance Updater</h2>
+<h2>Sales Invoice With Customer Balance</h2>
 
-<p>Enter Sales Invoice Key:</p>
 <input id="invoiceKey" placeholder="Paste Sales Invoice Key here">
+<button onclick="loadInvoice()">Load Invoice With Customer Balance</button>
 
-<button onclick="updateBalance()">Update Customer Balance Field</button>
-
+<div id="invoiceView"></div>
 <pre id="log"></pre>
 
 <script>
 const CUSTOM_FIELD_NAME = "Customer Balance";
 
-function log(message) {
-  document.getElementById("log").textContent += message + "\n";
+function log(msg) {
+  document.getElementById("log").textContent += msg + "\n";
 }
 
 async function apiGet(url) {
@@ -34,51 +99,35 @@ async function apiGet(url) {
   return await response.json();
 }
 
-async function apiPut(url, data) {
-  const response = await fetch(url, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data)
-  });
-  if (!response.ok) throw new Error(url + " failed: " + response.status);
-  return await response.text();
-}
-
-function findCustomerKey(invoice) {
-  return invoice.Customer || invoice.customer || invoice.CustomerKey || invoice.customerKey;
-}
-
-function findInvoiceTotal(invoice) {
-  return Number(
-    invoice.Total ||
-    invoice.total ||
-    invoice.Amount ||
-    invoice.amount ||
-    0
-  );
-}
-
-function formatNaira(amount) {
-  return "₦ " + Number(amount).toLocaleString("en-NG", {
+function money(value) {
+  return "₦ " + Number(value || 0).toLocaleString("en-NG", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
   });
 }
 
-async function updateBalance() {
+function pick(obj, names) {
+  for (const name of names) {
+    if (obj && obj[name] !== undefined && obj[name] !== null) return obj[name];
+  }
+  return "";
+}
+
+async function loadInvoice() {
   document.getElementById("log").textContent = "";
+  document.getElementById("invoiceView").innerHTML = "";
 
   try {
     const invoiceKey = document.getElementById("invoiceKey").value.trim();
-
     if (!invoiceKey) {
       alert("Please enter Sales Invoice Key");
       return;
     }
 
-    log("Reading sales invoice...");
+    log("Reading sales invoices...");
 
     const invoices = await apiGet("/api4/sales-invoice-batch");
+
     const invoice = invoices.find(x =>
       x.Key === invoiceKey ||
       x.key === invoiceKey ||
@@ -86,55 +135,127 @@ async function updateBalance() {
       x.id === invoiceKey
     );
 
-    if (!invoice) {
-      throw new Error("Invoice not found. Confirm the Sales Invoice Key.");
-    }
+    if (!invoice) throw new Error("Invoice not found.");
 
-    const customerKey = findCustomerKey(invoice);
+    const customerKey = pick(invoice, ["Customer", "customer", "CustomerKey", "customerKey"]);
+    const invoiceNumber = pick(invoice, ["Reference", "reference", "InvoiceNumber", "invoiceNumber", "Number", "number"]);
+    const invoiceDate = pick(invoice, ["Date", "date", "IssueDate", "issueDate"]);
+    const description = pick(invoice, ["Description", "description"]);
+    const lines = pick(invoice, ["Lines", "lines", "LineItems", "lineItems"]) || [];
 
-    if (!customerKey) {
-      throw new Error("Customer key not found on this invoice.");
-    }
+    log("Reading customers...");
+    const customers = await apiGet("/api4/customer-batch");
 
-    log("Customer found: " + customerKey);
+    const customer = customers.find(x =>
+      x.Key === customerKey ||
+      x.key === customerKey ||
+      x.Id === customerKey ||
+      x.id === customerKey
+    ) || {};
+
+    const customerName = pick(customer, ["Name", "name"]) || "Customer";
+    const customerAddress = pick(customer, ["Address", "address"]) || "";
+
     log("Reading customer balances...");
 
-    const customerTotals = await apiGet("/api4/sales-invoice-totals-by-customer-batch");
+    let balance = 0;
 
-    const customerRow = customerTotals.find(x =>
-      x.Customer === customerKey ||
-      x.customer === customerKey ||
-      x.CustomerKey === customerKey ||
-      x.customerKey === customerKey ||
-      x.Key === customerKey ||
-      x.key === customerKey
-    );
+    try {
+      const totals = await apiGet("/api4/sales-invoice-totals-by-customer-batch");
 
-    if (!customerRow) {
-      throw new Error("Customer balance row not found.");
+      const customerTotal = totals.find(x =>
+        x.Customer === customerKey ||
+        x.customer === customerKey ||
+        x.CustomerKey === customerKey ||
+        x.customerKey === customerKey ||
+        x.Key === customerKey ||
+        x.key === customerKey
+      );
+
+      if (customerTotal) {
+        balance = Number(
+          pick(customerTotal, ["Balance", "balance", "Amount", "amount", "Total", "total"])
+        ) || 0;
+      }
+    } catch (e) {
+      log("Could not read customer balance endpoint. Balance set to 0.");
     }
 
-    const balance =
-      customerRow.Balance ||
-      customerRow.balance ||
-      customerRow.Total ||
-      customerRow.total ||
-      customerRow.Amount ||
-      customerRow.amount ||
-      0;
+    let itemRows = "";
+    let subtotal = 0;
 
-    log("Balance found: " + balance);
+    lines.forEach((line, index) => {
+      const item = pick(line, ["Item", "item", "Description", "description"]) || "";
+      const qty = Number(pick(line, ["Qty", "qty", "Quantity", "quantity"]) || 0);
+      const unitPrice = Number(pick(line, ["UnitPrice", "unitPrice", "Price", "price"]) || 0);
+      const amount = Number(pick(line, ["Amount", "amount", "Total", "total"]) || qty * unitPrice);
 
-    invoice.CustomFields = invoice.CustomFields || invoice.customFields || invoice.custom_fields || {};
+      subtotal += amount;
 
-    invoice.CustomFields[CUSTOM_FIELD_NAME] = formatNaira(balance);
+      itemRows += `
+        <tr>
+          <td>${index + 1}</td>
+          <td>${item}</td>
+          <td class="right">${qty}</td>
+          <td class="right">${money(unitPrice)}</td>
+          <td class="right">${money(amount)}</td>
+        </tr>
+      `;
+    });
 
-    log("Updating invoice custom field...");
+    const total = Number(pick(invoice, ["Total", "total", "Amount", "amount"]) || subtotal);
 
-    await apiPut("/api4/sales-invoice-batch", [invoice]);
+    document.getElementById("invoiceView").innerHTML = `
+      <div class="invoice-title">Sales Invoice</div>
 
-    log("Done. Customer Balance field updated successfully.");
-    alert("Customer Balance updated successfully.");
+      <table class="header-table">
+        <tr>
+          <td style="width:40%">
+            <div class="bold">${customerName}</div>
+            <div>${customerAddress}</div>
+          </td>
+          <td style="width:25%">
+            <div class="bold">Invoice date</div>
+            <div>${invoiceDate}</div><br>
+            <div class="bold">Invoice number</div>
+            <div>${invoiceNumber}</div>
+          </td>
+          <td style="width:35%">
+            <div class="bold">Business</div>
+            <div>Invoice preview from Manager API4</div>
+          </td>
+        </tr>
+      </table>
+
+      <table class="items">
+        <thead>
+          <tr>
+            <th style="width:40px">#</th>
+            <th>Item</th>
+            <th class="right">Qty</th>
+            <th class="right">Unit price</th>
+            <th class="right">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${itemRows}
+          <tr>
+            <td colspan="4" class="right">Sub-total</td>
+            <td class="right">${money(subtotal)}</td>
+          </tr>
+          <tr>
+            <td colspan="4" class="right bold">Total</td>
+            <td class="right bold">${money(total)}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="balance">
+        Customer Balance&nbsp;&nbsp;&nbsp; ${money(balance)}
+      </div>
+    `;
+
+    log("Invoice loaded successfully.");
 
   } catch (error) {
     log("ERROR: " + error.message);
